@@ -34,7 +34,7 @@ if (up) {
     }
 }
 
-const _registry = {};
+const _registry = {}; // uriUser - {uriUser, [contacts: uri - {remote, expiresAt, contact}], [contactsOrdered], {knownAs}}
 const _contactUris = {}; // not used yet
 
 function _registerInternal(req, remote, upRemote) {
@@ -59,16 +59,24 @@ function _registerInternal(req, remote, upRemote) {
         entry.knownAs[req.headers.to.name] = {};
     }
 
+    if (req.headers.contact === "*") {
+        req.headers.contact = _getActualContacts(uriUser);
+    }
+
     for (let i in req.headers.contact) {
         const uri = req.headers.contact[i].uri;
         if (entry.contacts[uri]) {
-            Object.assign(entry.contacts[uri], req.headers.contact[i]);
+            entry.contacts[uri].contact = req.headers.contact[i];
+            //Object.assign(entry.contacts[uri], req.headers.contact[i]);
         } else {
-            entry.contactsOrdered.push(req.headers.contact[i]);
-            entry.contacts[uri] = req.headers.contact[i];
+            entry.contacts[uri] = {
+                contact: req.headers.contact[i]
+            };
+            entry.contactsOrdered.push(entry.contacts[uri]);
+            //entry.contacts[uri] = req.headers.contact[i];
         }
 
-        _contactUris[uri] = entry.contacts[uri];
+        _contactUris[uri] = entry.contacts[uri];  // not used yet
 
         entry.contacts[uri].expiresAt = expiresAt;
         entry.contacts[uri].remote = {
@@ -84,7 +92,7 @@ function _registerInternal(req, remote, upRemote) {
 
     // order by "q param and expiration
     entry.contactsOrdered.sort((contact1, contact2) => {
-        const q = (contact2.params.q ? +contact2.params.q : 0) - (contact1.params.q ? +contact1.params.q : 0);
+        const q = (contact2.contact.params.q ? +contact2.contact.params.q : 0) - (contact1.contact.params.q ? +contact1.contact.params.q : 0);
         if (q === 0) { // equal
             return contact2.expiresAt - contact1.expiresAt;
         }
@@ -95,6 +103,24 @@ function _registerInternal(req, remote, upRemote) {
 
     return entry;
 }
+
+// remove expired contacts
+setInterval(() => {
+    const tim = Date.now();
+    let count = 0;
+    for (const entry of _registry) {
+        let i = entry.contactsOrdered.length;
+        while (i--) {
+            const contactInfo = entry.contactsOrdered[i];
+            if (contactInfo.expiresAt < tim) {
+                entry.contactsOrdered.splice(i, 1)[0];
+                delete entry.contacts[contactInfo.contact.uri];
+                count++;
+            }
+        }
+    }
+    console.debug(`Removed ${count} expired registrations`);
+}, 1000 * 60 * 60); // every hour
 
 const _registerUp = function (req, remote) {
     // forward to the real regisrar
@@ -127,7 +153,9 @@ const _registerUp = function (req, remote) {
 const _registerHere = function (req, remote) {
     // we are the registrar ourselves
     const reg = _registerInternal(req, remote);
-    proxy.send(sip.makeResponse(req, 200, 'OK'));
+    const res = sip.makeResponse(req, 200, 'OK');
+    //res.headers.contact = _getActualContacts(reg.uriUser);
+    proxy.send(res);
 };
 
 const _routeUp = function (req) {
@@ -141,15 +169,20 @@ const _routeUp = function (req) {
 };
 
 function _getActualContacts(uriUser, limit) {
+    if (!limit) {
+        limit = 65535; // TODO: reengineer how specify no limit
+    }
     const tim = Date.now();
     const ret = [];
-    const contacts = _registry[uriUser].contacts;
-    for (const uri in contacts) {
-        const contact = contacts[uri];
-        if (contact.expiresAt < tim) {
-            ret.push(contact);
-            if (ret.length >= limit) {
-                break;
+    const entry = _registry[uriUser];
+    if (entry) {
+        const contacts = entry.contactsOrdered;
+        for (const contactInfo of contacts) {
+            if (contactInfo.expiresAt < tim) {
+                ret.push(contactInfo.contact);
+                if (ret.length >= limit) {
+                    break;
+                }
             }
         }
     }
@@ -197,6 +230,8 @@ proxy.start(config, function (req, remote) {
     if (!req.method) {
         console.warn("Rogue response", remote);
     } else {
+        delete req.reason;
+        delete req.status;
         if (req.method === 'REGISTER') {
             _register(req, remote);
         } else {
