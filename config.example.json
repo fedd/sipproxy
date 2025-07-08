@@ -1,0 +1,10 @@
+{
+    "publicAddress": "example.com",
+    "address": "0.0.0.0",
+    "port": 5060,
+    "verbose": true,
+    "up": {
+        "host": "1.2.3.4",
+        "port": 5060
+    }
+}

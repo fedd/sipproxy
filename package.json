@@ -1,0 +1,10 @@
+{
+    "name": "sipproxy",
+    "version": "0.0.1",
+    "keywords": ["sip", "server", "client", "proxy"],
+    "author": "fedd@vsetec.com",
+    "contributors": [],
+    "dependencies": {
+        "sip": ""
+    }
+}
