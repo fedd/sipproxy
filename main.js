@@ -90,7 +90,7 @@ function _registerInternal(req, remote, upRemote) {
         }
     }
 
-    // order by "q param and expiration
+    // order by "q" param and expiration
     entry.contactsOrdered.sort((contact1, contact2) => {
         const q = (contact2.contact.params.q ? +contact2.contact.params.q : 0) - (contact1.contact.params.q ? +contact1.contact.params.q : 0);
         if (q === 0) { // equal
