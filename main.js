@@ -37,10 +37,10 @@ if (up) {
 const _registry = {}; // uriUser - {uriUser, [contacts: uri - {remote, expiresAt, contact}], [contactsOrdered], {knownAs}}
 const _contactUris = {}; // not used yet
 
-function _registerInternal(req, remote, upRemote) {
-
+function _registerInternal(req, remote, upRemote, failed) {
+    const tim = Date.now();
     const uriUser = sip.parseUri(req.headers.to.uri).user;
-    const expiresAt = (req.headers.expires ? +req.headers.expires : 3600000) + Date.now();
+    const expiresAt = (req.headers.expires ? +req.headers.expires * 1000 : 3600000) + tim;
 
     let entry = _registry[uriUser];
     if (!entry) {
@@ -63,17 +63,29 @@ function _registerInternal(req, remote, upRemote) {
         req.headers.contact = _getActualContacts(uriUser);
     }
 
+    const modifiedContactUris = [];
+
     for (let i in req.headers.contact) {
         const uri = req.headers.contact[i].uri;
+        if (!uri) {
+            failed.push(req.headers.contact[i]);
+            continue;
+        } else {
+            const parsedUri = sip.parseUri(uri);
+            if (!parsedUri || !parsedUri.host) {
+                failed.push(uri);
+                continue;
+            }
+        }
+        modifiedContactUris.push(uri);
+
         if (entry.contacts[uri]) {
             entry.contacts[uri].contact = req.headers.contact[i];
-            //Object.assign(entry.contacts[uri], req.headers.contact[i]);
         } else {
             entry.contacts[uri] = {
                 contact: req.headers.contact[i]
             };
-            entry.contactsOrdered.push(entry.contacts[uri]);
-            //entry.contacts[uri] = req.headers.contact[i];
+            entry.contactsOrdered.push(req.headers.contact[i]);
         }
 
         _contactUris[uri] = entry.contacts[uri];  // not used yet
@@ -90,36 +102,47 @@ function _registerInternal(req, remote, upRemote) {
         }
     }
 
+    const removed = [];
+    _removeExpired(entry, tim, removed);
+
     // order by "q" param and expiration
     entry.contactsOrdered.sort((contact1, contact2) => {
-        const q = (contact2.contact.params.q ? +contact2.contact.params.q : 0) - (contact1.contact.params.q ? +contact1.contact.params.q : 0);
+        const q = (contact2.params.q ? +contact2.params.q : 0) - (contact1.params.q ? +contact1.params.q : 0);
         if (q === 0) { // equal
-            return contact2.expiresAt - contact1.expiresAt;
+            return entry.contacts[contact2.uri].expiresAt - entry.contacts[contact1.uri].expiresAt;
         }
         return q;
     });
 
-    console.debug("REGISTER OK", req.headers.to.uri);
-
+    if (failed.length > 0) {
+        console.warn("REGISTER FAIL (bad uris)", req.headers.to.uri, failed);
+    } else {
+        console.debug("REGISTER OK", req.headers.to.uri, modifiedContactUris);
+    }
     return entry;
+
+}
+
+function _removeExpired(entry, tim, removed) {
+    let i = entry.contactsOrdered.length;
+    while (i--) {
+        const contact = entry.contactsOrdered[i];
+        if (entry.contacts[contact.uri].expiresAt <= tim) {
+            removed.push(entry.contacts[contact.uri]);
+            entry.contactsOrdered.splice(i, 1)[0];
+            delete entry.contacts[contact.uri];
+        }
+    }
 }
 
 // remove expired contacts
 setInterval(() => {
     const tim = Date.now();
-    let count = 0;
+    let removed = [];
     for (const entry of _registry) {
-        let i = entry.contactsOrdered.length;
-        while (i--) {
-            const contactInfo = entry.contactsOrdered[i];
-            if (contactInfo.expiresAt < tim) {
-                entry.contactsOrdered.splice(i, 1)[0];
-                delete entry.contacts[contactInfo.contact.uri];
-                count++;
-            }
-        }
+        _removeExpired(entry, tim, removed);
     }
-    console.debug(`Removed ${count} expired registrations`);
+    console.debug(`Removed ${removed.length} expired registrations`, removed);
 }, 1000 * 60 * 60); // every hour
 
 const _registerUp = function (req, remote) {
@@ -136,10 +159,10 @@ const _registerUp = function (req, remote) {
 
             if (+res.status >= 200) {
                 // success
-                const reg = _registerInternal(req, remote, upRemote);
+                //_registerInternal(req, remote, upRemote);
 
             } else {
-                console.warn("REGISTER FAIL", req, res);
+                console.warn("REGISTER FAIL (bad response)", req, res);
             }
 
             // default proxy behaviour
@@ -147,14 +170,20 @@ const _registerUp = function (req, remote) {
             proxy.send(res);
         });
     } catch (err) {
-        console.error("REGISTER FAIL", err);
+        console.error("REGISTER FAIL (error)", err);
     }
 };
 const _registerHere = function (req, remote) {
     // we are the registrar ourselves
-    const reg = _registerInternal(req, remote);
-    const res = sip.makeResponse(req, 200, 'OK');
-    //res.headers.contact = _getActualContacts(reg.uriUser);
+    const failed = [];
+    const entry = _registerInternal(req, remote, null, failed);
+    let res = null;
+    if (failed.length === 0) {
+        res = sip.makeResponse(req, 200, 'OK');
+    } else {
+        res = sip.makeResponse(req, 501, `Unable to recognize contacts ${JSON.stringify(failed)}, could be IPv6 which is unsupported`);
+    }
+    res.headers.contact = entry.contactsOrdered;
     proxy.send(res);
 };
 
@@ -176,10 +205,10 @@ function _getActualContacts(uriUser, limit) {
     const ret = [];
     const entry = _registry[uriUser];
     if (entry) {
-        const contacts = entry.contactsOrdered;
-        for (const contactInfo of contacts) {
-            if (contactInfo.expiresAt < tim) {
-                ret.push(contactInfo.contact);
+        for (const contact of entry.contactsOrdered) {
+            const contactInfo = entry.contacts[contact.uri];
+            if (contactInfo.expiresAt > tim) {
+                ret.push(contact);
                 if (ret.length >= limit) {
                     break;
                 }
@@ -204,13 +233,15 @@ const _routeHere = function (req) {
     // routing to multiple contacts of a user involves cancelling the calls
     // if one of the phones is picked up. So not implemented yet
 
-
     // forward to a registered user
     let uriUser = sip.parseUri(req.uri).user;
     if (uriUser) {
         let goodContact = _getActualContact(uriUser);
         if (goodContact) {
             req.uri = goodContact.uri;
+
+            console.debug("ROUTE", goodContact.uri);
+
             //proxy.send(sip.makeResponse(req, 100, 'Trying')); 
             proxy.send(req);
             return;
@@ -235,6 +266,7 @@ proxy.start(config, function (req, remote) {
         if (req.method === 'REGISTER') {
             _register(req, remote);
         } else {
+            console.debug(req.method, req.uri);
             _route(req);
         }
     }
