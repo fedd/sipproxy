@@ -139,8 +139,8 @@ function _removeExpired(entry, tim, removed) {
 setInterval(() => {
     const tim = Date.now();
     let removed = [];
-    for (const entry of _registry) {
-        _removeExpired(entry, tim, removed);
+    for (const uriName in _registry) {
+        _removeExpired(_registry[uriName], tim, removed);
     }
     console.debug(`Removed ${removed.length} expired registrations`, removed);
 }, 1000 * 60 * 60); // every hour
