@@ -37,7 +37,7 @@ if (up) {
 const _registry = {}; // uriUser - {uriUser, [contacts: uri - {remote, expiresAt, contact}], [contactsOrdered], {knownAs}}
 const _contactUris = {}; // not used yet
 
-function _registerInternal(req, remote, upRemote, failed) {
+function _registerInternal(req, remote, failed) {
     const tim = Date.now();
     const uriUser = sip.parseUri(req.headers.to.uri).user;
     const expiresAt = (req.headers.expires ? +req.headers.expires * 1000 : 3600000) + tim;
@@ -60,7 +60,7 @@ function _registerInternal(req, remote, upRemote, failed) {
     }
 
     if (req.headers.contact === "*") {
-        req.headers.contact = _getActualContacts(uriUser);
+        req.headers.contact = _getActualContacts(uriUser, tim);
     }
 
     const modifiedContactUris = [];
@@ -91,12 +91,7 @@ function _registerInternal(req, remote, upRemote, failed) {
         _contactUris[uri] = entry.contacts[uri];  // not used yet
 
         entry.contacts[uri].expiresAt = expiresAt;
-        entry.contacts[uri].remote = {
-            user: remote
-        };
-        if (upRemote) {
-            entry.contacts[uri].remote.up = upRemote;
-        }
+        entry.contacts[uri].remote = remote;
         if (req.headers.contact[i].name) {
             entry.knownAs[req.headers.contact[i].name] = {};
         }
@@ -133,14 +128,17 @@ function _removeExpired(entry, tim, removed) {
             delete entry.contacts[contact.uri];
         }
     }
+    if (entry.contactsOrdered.length === 0) {
+        delete _registry[entry.uriUser];
+    }
 }
 
 // remove expired contacts
 setInterval(() => {
     const tim = Date.now();
     let removed = [];
-    for (const uriName in _registry) {
-        _removeExpired(_registry[uriName], tim, removed);
+    for (const uriUser in _registry) {
+        _removeExpired(_registry[uriUser], tim, removed);
     }
     console.debug(`Removed ${removed.length} expired registrations`, removed);
 }, 1000 * 60 * 60); // every hour
@@ -155,11 +153,10 @@ const _registerUp = function (req, remote) {
             req.uri = sip.stringifyUri(uriReq);
         }
 
-        proxy.send(req, (res, upRemote) => {
+        proxy.send(req, (res) => {
 
             if (+res.status >= 200) {
                 // success
-                //_registerInternal(req, remote, upRemote);
 
             } else {
                 console.warn("REGISTER FAIL (bad response)", req, res);
@@ -173,15 +170,16 @@ const _registerUp = function (req, remote) {
         console.error("REGISTER FAIL (error)", err);
     }
 };
+
 const _registerHere = function (req, remote) {
     // we are the registrar ourselves
     const failed = [];
-    const entry = _registerInternal(req, remote, null, failed);
+    const entry = _registerInternal(req, remote, failed);
     let res = null;
     if (failed.length === 0) {
         res = sip.makeResponse(req, 200, 'OK');
     } else {
-        res = sip.makeResponse(req, 501, `Unable to recognize contacts ${JSON.stringify(failed)}, could be IPv6 which is unsupported`);
+        res = sip.makeResponse(req, 501, `Unable to register contacts ${JSON.stringify(failed)}`);
     }
     res.headers.contact = entry.contactsOrdered;
     proxy.send(res);
@@ -197,14 +195,13 @@ const _routeUp = function (req) {
     proxy.send(req); // default response back-sending
 };
 
-function _getActualContacts(uriUser, limit) {
-    if (!limit) {
-        limit = 65535; // TODO: reengineer how specify no limit
-    }
-    const tim = Date.now();
-    const ret = [];
+function _getActualContacts(uriUser, tim, limit) {
     const entry = _registry[uriUser];
     if (entry) {
+        if (!limit) {
+            limit = 65535; // TODO: reengineer how specify no limit
+        }
+        const ret = [];
         for (const contact of entry.contactsOrdered) {
             const contactInfo = entry.contacts[contact.uri];
             if (contactInfo.expiresAt > tim) {
@@ -219,7 +216,7 @@ function _getActualContacts(uriUser, limit) {
 }
 
 function _getActualContact(uriUser) {
-    const contacts = _getActualContacts(uriUser, 1);
+    const contacts = _getActualContacts(uriUser, Date.now(), 1);
     if (contacts.length > 0) {
         return contacts[0];
     } else {
