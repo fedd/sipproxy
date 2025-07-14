@@ -178,6 +178,7 @@ const _registerHere = function (req, remote) {
     let res = null;
     if (failed.length === 0) {
         res = sip.makeResponse(req, 200, 'OK');
+        res.headers.to.tag = Math.floor(Math.random() * 1e6); // taken from sip js exmaples, no idea what it does
     } else {
         res = sip.makeResponse(req, 501, `Unable to register contacts ${JSON.stringify(failed)}`);
     }
@@ -236,10 +237,8 @@ const _routeHere = function (req) {
         let goodContact = _getActualContact(uriUser);
         if (goodContact) {
             req.uri = goodContact.uri;
-
             console.debug("ROUTE", goodContact.uri);
-
-            //proxy.send(sip.makeResponse(req, 100, 'Trying')); 
+            proxy.send(sip.makeResponse(req, 100, 'Trying'));
             proxy.send(req);
             return;
         }
